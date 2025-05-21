@@ -25,16 +25,16 @@ class UART_CMD(IntEnum):
 
 
 class VendorDataStruct(Structure):
-    __pack__ = 1
-    __fields__ = [("VendorId", c_uint8), ("ProductId", c_uint8), ("FwVersion", c_uint8)]
+    _pack_ = 1
+    _fields_ = [("VendorId", c_uint8), ("ProductId", c_uint8), ("FwVersion", c_uint8)]
 
     def __str__(self):
         return f"VendorID: {hex(self.VendorId)}, ProductID: {hex(self.ProductId)}, FwVersion: {hex(self.FwVersion)}"
 
 
 class PowerSensor(Structure):
-    __pack__ = 1
-    __fields__ = [("Voltage", c_int16), ("Current", c_int32), ("Power", c_int32)]
+    _pack_ = 1
+    _fields_ = [("Voltage", c_int16), ("Current", c_int32), ("Power", c_int32)]
 
     def __str__(self):
         return f"Voltage: {self.Voltage}, Current: {self.Current}, Power: {self.Power}"

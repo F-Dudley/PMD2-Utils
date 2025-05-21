@@ -1,0 +1,7 @@
+README.md
+setup.py
+PMD_Utils.egg-info/PKG-INFO
+PMD_Utils.egg-info/SOURCES.txt
+PMD_Utils.egg-info/dependency_links.txt
+PMD_Utils.egg-info/requires.txt
+PMD_Utils.egg-info/top_level.txt

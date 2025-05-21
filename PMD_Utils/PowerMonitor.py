@@ -20,8 +20,6 @@ class PowerMonitor:
         poll_interval: int = 10,
         port: str = None,
         hwid: str = None,
-        vid: str = None,
-        pid: str = None,
         baudrate: int = 115200,
     ):
         assert os.path.exists(dump_dir), f"Dump directory {dump_dir} does not exist"
@@ -31,7 +29,7 @@ class PowerMonitor:
 
         serial = Serial(port, baudrate=baudrate, timeout=1, rtscts=False, dsrdtr=False)
 
-        if self._verify_serial(port, hwid, vid, pid):
+        if self._verify_serial(serial):
             self.device_port = port
             self.device_desc = desc
             self.device_hwid = hwid
@@ -201,7 +199,8 @@ class PowerMonitor:
         serial.dtr = True
 
         serial.write(UART_CMD.CMD_READ_VENDOR_DATA.to_bytes())
-        vendor_data = VendorDataStruct.from_buffer_copy(serial.read(3))
+        vendor_buffer = serial.read(3)
+        vendor_data = VendorDataStruct.from_buffer_copy(vendor_buffer)
         print(f"Vendor Data: {vendor_data}")
         assert (
             vendor_data.VendorId == VENDOR_ID and vendor_data.ProductId == PRODUCT_ID
