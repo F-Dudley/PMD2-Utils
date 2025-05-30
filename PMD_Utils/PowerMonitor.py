@@ -10,57 +10,68 @@ import pandas as pd
 from .Types import *
 
 
+FLUSH_TYPES = ["numpy", "csv"]
+
+
 class PowerMonitor:
 
     def __init__(
         self,
-        dump_dir: str = ".",
-        dump_file: str = "energy_data.csv",
+        flush_dir: str = "./pmd_data",
+        flush_name: str = f"energy_data_{time.strftime('%Y%m%d_%H%M%S')}",
+        flush_type: str = "csv",
+        flush_interval: int = 10,
         n_samples: int = 100,
         poll_interval: int = 10,
+        baudrate: int = 115200,
         port: str = None,
         hwid: str = None,
-        baudrate: int = 115200,
+        timeout: int = None,
     ):
-        assert os.path.exists(dump_dir), f"Dump directory {dump_dir} does not exist"
+        assert flush_type in FLUSH_TYPES, f"Flush type must be one of {FLUSH_TYPES}"
+        assert n_samples > 0, "Number of samples must be greater than 0"
 
-        port, desc, hwid = self._get_best_device(port, hwid)
-        print(f"Using device: {port} - {desc} - {hwid}")
+        self.flush_name = flush_name
+        self.flush_dir = os.path.join(os.path.abspath(flush_dir), flush_name)
+        self.flush_type = flush_type
+        self.flush_interval = flush_interval
+        self._curr_flush_time = float("inf")
+        os.makedirs(flush_dir, exist_ok=True)
 
-        serial = Serial(port, baudrate=baudrate, timeout=1, rtscts=False, dsrdtr=False)
+        self.n_samples = n_samples
+        self.poll_interval = poll_interval
+        self.timeout = timeout
 
-        if self._verify_serial(serial):
-            self.device_port = port
-            self.device_desc = desc
-            self.device_hwid = hwid
-            self.dump_file: str = os.path.join(dump_dir, dump_file)
-            self.n_samples: int = n_samples
+        self.device_port, self.device_desc, self.device_hwid = self._get_best_device(
+            port, hwid
+        )
+        self.baudrate = baudrate
+        print(
+            f"Using device: {self.device_port} - {self.device_desc} - {self.device_hwid}"
+        )
 
-            self._serial: Serial = serial
-            self._thread = Thread(
-                target=self._perform_collection,
-                args=(self.dump_file, n_samples, poll_interval),
-                daemon=True,
-            )
-            self._lock = Lock()
-            self._run_collection = False
+        # Serial Specifics
+        self._serial: Serial = None
+        self._lock = Lock()
+        self._run_collection = False
+        self._collection_thread = None
 
-            with self._lock:
-                self._flush_buffer = []
-
-                self._volt_buffer = np.zeros((n_samples, SENSOR_POWER_NUM))
-                self._curr_buffer = np.zeros((n_samples, SENSOR_POWER_NUM))
-                self._power_buffer = np.zeros((n_samples, SENSOR_POWER_NUM))
-        else:
-            raise RuntimeError(
-                f"Warning: Firmware version mismatch. Expected {hex(FIRMWARE_VERSION)}"
-            )
+        self._flush_buffer = []
+        self._volt_buffer = np.zeros((n_samples, SENSOR_POWER_NUM))
+        self._curr_buffer = np.zeros((n_samples, SENSOR_POWER_NUM))
+        self._power_buffer = np.zeros((n_samples, SENSOR_POWER_NUM))
 
     def __del__(self):
 
         if hasattr(self, "_serial") and self._serial.is_open:
+            print("Closing Serial Port")
             self._serial.dtr = False
             self._serial.close()
+
+        if hasattr(self, "_collection_thread") and self._collection_thread.is_alive():
+            print("Stopping Collection Thread")
+            self._run_collection = False
+            self._collection_thread.join()
 
     def __enter__(self):
         self.start()
@@ -69,28 +80,120 @@ class PowerMonitor:
         self.stop()
 
     def start(self):
-        self._serial.open()
-        self._serial.dtr = True
+        with self._lock:
+            if self._serial != None & self._serial.is_open:
+                print("Serial Port alread Open")
+                return
 
-        self._serial.read_all()
+        serial = Serial(
+            port=self.device_port,
+            baudrate=self.baudrate,
+            timeout=self.timeout,
+            rtscts=False,
+            dsrtr=False,
+        )
 
-        self._run_collection = True
-        self._thread.start()
+        if self._verify_serial(serial):
+            serial.read_all()
+            serial.reset_input_buffer()
+            serial.reset_output_buffer()
+
+            self._curr_flush_time = time.time() + self.flush_interval
+
+            self._serial = serial
+            self._serial.dtr = True
+            self._run_collection = True
+
+            self._collection_thread = Thread(
+                target=self._perform_collection,
+                args=(self.dump_file, self.n_samples, self.poll_interval),
+                daemon=True,
+            )
+            self._collection_thread.start()
+            print("Started Power Monitor Collection")
 
     def stop(self):
 
         self._run_collection = False
-        self._thread.join()
+        self._collection_thread.join()
+
+        self._serial.reset_input_buffer()
+        self._serial.reset_output_buffer()
+        self._serial.flush()
 
         self._serial.dtr = False
         self._serial.close()
 
-        self.flush_data(self.dump_file)
+        self.flush_data()
+        self._concat_flushed_data()
 
-    def flush_data(
-        self, dump_file: str = os.path.join(".", "collected_energy_usage.csv")
-    ):
-        pass
+    def flush_data(self):
+        with self._lock:
+
+            flush_amount = len(os.listdir(self.flush_dir))
+
+            match (self.flush_type.lower()):
+                case "numpy":
+                    np.save(
+                        os.path.join(
+                            self.flush_dir, f"frag{flush_amount}_{self.flush_name}.npy"
+                        ),
+                        np.array(self._flush_buffer),
+                    )
+                case "csv":
+                    df = pd.DataFrame(self._flush_buffer)
+                    df.to_csv(
+                        os.path.join(
+                            self.flush_dir, f"frag{flush_amount}_{self.flush_name}.csv"
+                        ),
+                        index=False,
+                    )
+
+            self._flush_buffer = []
+
+    def _concat_flushed_data(self):
+        with self._lock:
+            frag_files = [
+                frag_file
+                for frag_file in os.listdir(self.flush_dir)
+                if frag_file.endswith(f"_{self.flush_name}.csv")
+                or frag_file.endswith(f"_{self.flush_name}.npy")
+            ]
+
+            if len(frag_files) == 0:
+                return
+
+            match (self.flush_type.lower()):
+                case "numpy":
+                    data = np.concatenate(
+                        [
+                            np.load(os.path.join(self.flush_dir, frag))
+                            for frag in frag_files
+                        ]
+                    )
+
+                    np.save(
+                        os.path.join(
+                            self.flush_dir, f"collected_{self.flush_name}.npy"
+                        ),
+                        data,
+                    )
+
+                case "csv":
+                    data = pd.concat(
+                        [
+                            pd.read_csv(os.path.join(self.flush_dir, frag))
+                            for frag in frag_files
+                        ],
+                        ignore_index=True,
+                    )
+
+                    data.to_csv(
+                        os.path.join(
+                            self.flush_dir, f"collected_{self.flush_name}.csv"
+                        ),
+                        index=False,
+                    )
 
     def _perform_collection(
         self,
@@ -141,24 +244,9 @@ class PowerMonitor:
                     entry[f"{SENSOR_DEVICES[i]}_Power"] = avg_power[i]
                 self._flush_buffer.append(entry)
 
-            if len(self._flush_buffer) >= n_samples * 4:
-                if os.path.exists(dump_file):
-                    df = pd.read_csv(dump_file)
-
-                    df = pd.concat(
-                        [
-                            df,
-                            pd.DataFrame(self._flush_buffer),
-                        ],
-                        ignore_index=True,
-                    )
-                else:
-                    df = pd.DataFrame(
-                        data=self._flush_buffer,
-                    )
-
-                df.to_csv(dump_file, index=False)
-                self._flush_buffer = []
+            if time.time() >= self._curr_flush_time:
+                self.flush_data()
+                self._curr_flush_time = time.time() + self.flush_interval
 
     def _get_best_device(
         self,
@@ -194,25 +282,24 @@ class PowerMonitor:
 
                 return avail_devices[idx]
 
-    def _verify_serial(self, serial) -> bool:
+    def _verify_serial(self, serial: Serial) -> bool:
         """
         Verify the device is connected and compatible.
         """
         serial.dtr = True
 
+        vendor_buffer: bytes = None
         serial.write(UART_CMD.CMD_READ_VENDOR_DATA.to_bytes())
-        vendor_buffer = serial.read(3)
+        while vendor_buffer is None or len(vendor_buffer) != sizeof(VendorDataStruct):
+            vendor_buffer += serial.read(sizeof(VendorDataStruct))
         vendor_data = VendorDataStruct.from_buffer_copy(vendor_buffer)
         print(f"Vendor Data: {vendor_data}")
         assert (
             vendor_data.VendorId == VENDOR_ID and vendor_data.ProductId == PRODUCT_ID
-        ), "Vendor ID and Product Mismatch"
+        ), "Vendor ID and Product Mismatch | Expected: 0x{VENDOR_ID:02X}, 0x{PRODUCT_ID:02X} | Got: 0x{vendor_data.VendorId:02X}, 0x{vendor_data.ProductId:02X}"
 
-        if vendor_data.FwVersion != FIRMWARE_VERSION:
-            return False
-
-        serial.read_all()
-        serial.close()
-        serial.dtr = False
+        assert (
+            vendor_data.FwVersion != FIRMWARE_VERSION
+        ), f"Firmware Version too low | Expected: {FIRMWARE_VERSION} | Got: {vendor_data.FwVersion}"
 
         return True
