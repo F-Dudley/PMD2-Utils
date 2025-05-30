@@ -196,7 +196,15 @@ class PowerMonitor:
                     )
 
                 case "csv":
-                    data = pd.DataFrame(data)
+                    cols = [
+                        "Timestamp",
+                    ] + [
+                        f"{SENSOR_DEVICES[i]}_{suffix}"
+                        for i in range(SENSOR_POWER_NUM)
+                        for suffix in ["Voltage", "Current", "Power"]
+                    ]
+
+                    data = pd.DataFrame(data, columns=cols)
                     data.to_csv(
                         os.path.join(
                             self.flush_dir, f"collected_{self.flush_name}.csv"
