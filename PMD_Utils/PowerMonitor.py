@@ -19,7 +19,8 @@ class PowerMonitor:
         self,
         flush_dir: str = "./pmd_data",
         flush_name: str = f"energy_data_{time.strftime('%Y%m%d_%H%M%S')}",
-        flush_type: str = "csv",
+        flush_type: str = "numpy",
+        concat_flush_type: str = "csv",
         flush_interval: int = 10,
         n_samples: int = 100,
         poll_interval: int = 10,
@@ -29,11 +30,15 @@ class PowerMonitor:
         timeout: int = None,
     ):
         assert flush_type in FLUSH_TYPES, f"Flush type must be one of {FLUSH_TYPES}"
+        assert (
+            concat_flush_type in FLUSH_TYPES
+        ), f"Final flush type must be one of {FLUSH_TYPES}"
         assert n_samples > 0, "Number of samples must be greater than 0"
 
         self.flush_name = flush_name
         self.flush_dir = os.path.join(os.path.abspath(flush_dir), flush_name)
         self.flush_type = flush_type
+        self.concat_flush_type = concat_flush_type
         self.flush_interval = flush_interval
         self._curr_flush_time = float("inf")
         os.makedirs(flush_dir, exist_ok=True)
@@ -92,6 +97,7 @@ class PowerMonitor:
             rtscts=False,
             dsrtr=False,
         )
+        serial.dtr = True
 
         if self._verify_serial(serial):
             serial.read_all()
@@ -101,7 +107,6 @@ class PowerMonitor:
             self._curr_flush_time = time.time() + self.flush_interval
 
             self._serial = serial
-            self._serial.dtr = True
             self._run_collection = True
 
             self._collection_thread = Thread(
@@ -172,13 +177,6 @@ class PowerMonitor:
                         ]
                     )
 
-                    np.save(
-                        os.path.join(
-                            self.flush_dir, f"collected_{self.flush_name}.npy"
-                        ),
-                        data,
-                    )
-
                 case "csv":
                     data = pd.concat(
                         [
@@ -186,8 +184,19 @@ class PowerMonitor:
                             for frag in frag_files
                         ],
                         ignore_index=True,
+                    ).to_numpy()
+
+            match (self.concat_flush_type.lower()):
+                case "numpy":
+                    np.savez(
+                        os.path.join(
+                            self.flush_dir, f"EnergyData_{self.flush_name}.npy"
+                        ),
+                        data,
                     )
 
+                case "csv":
+                    data = pd.DataFrame(data)
                     data.to_csv(
                         os.path.join(
                             self.flush_dir, f"collected_{self.flush_name}.csv"
@@ -286,8 +295,6 @@ class PowerMonitor:
         """
         Verify the device is connected and compatible.
         """
-        serial.dtr = True
-
         vendor_buffer: bytes = None
         serial.write(UART_CMD.CMD_READ_VENDOR_DATA.to_bytes())
         while vendor_buffer is None or len(vendor_buffer) != sizeof(VendorDataStruct):
