@@ -41,7 +41,7 @@ class PowerMonitor:
         self.concat_flush_type = concat_flush_type
         self.flush_interval = flush_interval
         self._curr_flush_time = float("inf")
-        os.makedirs(flush_dir, exist_ok=True)
+        os.makedirs(self.flush_dir, exist_ok=True)
 
         self.n_samples = n_samples
         self.poll_interval = poll_interval
@@ -61,19 +61,19 @@ class PowerMonitor:
         self._run_collection = False
         self._collection_thread = None
 
-        self._flush_buffer = []
+        self._flush_buffer: list[dict] = []
         self._volt_buffer = np.zeros((n_samples, SENSOR_POWER_NUM))
         self._curr_buffer = np.zeros((n_samples, SENSOR_POWER_NUM))
         self._power_buffer = np.zeros((n_samples, SENSOR_POWER_NUM))
 
     def __del__(self):
 
-        if hasattr(self, "_serial") and self._serial.is_open:
+        if self._serial is not None and self._serial.is_open:
             print("Closing Serial Port")
             self._serial.dtr = False
             self._serial.close()
 
-        if hasattr(self, "_collection_thread") and self._collection_thread.is_alive():
+        if self._collection_thread is not None and self._collection_thread.is_alive():
             print("Stopping Collection Thread")
             self._run_collection = False
             self._collection_thread.join()
@@ -86,8 +86,8 @@ class PowerMonitor:
 
     def start(self):
         with self._lock:
-            if self._serial != None & self._serial.is_open:
-                print("Serial Port alread Open")
+            if self._serial is not None and self._serial.is_open:
+                print("Serial Port already Open")
                 return
 
         serial = Serial(
@@ -95,7 +95,7 @@ class PowerMonitor:
             baudrate=self.baudrate,
             timeout=self.timeout,
             rtscts=False,
-            dsrtr=False,
+            dsrdtr=False,
         )
         serial.dtr = True
 
@@ -111,7 +111,7 @@ class PowerMonitor:
 
             self._collection_thread = Thread(
                 target=self._perform_collection,
-                args=(self.dump_file, self.n_samples, self.poll_interval),
+                args=(self.n_samples, self.poll_interval),
                 daemon=True,
             )
             self._collection_thread.start()
@@ -130,7 +130,7 @@ class PowerMonitor:
         self._serial.close()
 
         self.flush_data()
-        self._concat_flushed_data()
+        # self._concat_flushed_data()
 
     def flush_data(self):
         with self._lock:
@@ -143,7 +143,7 @@ class PowerMonitor:
                         os.path.join(
                             self.flush_dir, f"frag{flush_amount}_{self.flush_name}.npy"
                         ),
-                        np.array(self._flush_buffer),
+                        [list(buff.items()) for buff in self._flush_buffer],
                     )
                 case "csv":
                     df = pd.DataFrame(self._flush_buffer)
@@ -170,7 +170,7 @@ class PowerMonitor:
 
             match (self.flush_type.lower()):
                 case "numpy":
-                    data = np.concatenate(
+                    data = np.vstack(
                         [
                             np.load(os.path.join(self.flush_dir, frag))
                             for frag in frag_files
@@ -214,7 +214,6 @@ class PowerMonitor:
 
     def _perform_collection(
         self,
-        dump_file: str = os.path.join(".", "collected_energy_usage.csv"),
         n_samples: int = 100,
         poll_interval: int = 10,
     ):
@@ -249,9 +248,9 @@ class PowerMonitor:
                 self._curr_buffer = np.zeros(shape=self._curr_buffer.shape)
                 self._power_buffer = np.zeros(shape=self._power_buffer.shape)
 
-            print(f"Avg Voltage: {avg_volt}\n\n")
-            print(f"Avg Current: {avg_curr}\n\n")
-            print(f"Avg Power: {avg_power}\n\n")
+            # print(f"Avg Voltage: {avg_volt}\n\n")
+            # print(f"Avg Current: {avg_curr}\n\n")
+            # print(f"Avg Power: {avg_power}\n\n")
 
             with self._lock:
                 entry = {"Timestamp": time.time()}
@@ -303,18 +302,18 @@ class PowerMonitor:
         """
         Verify the device is connected and compatible.
         """
-        vendor_buffer: bytes = None
+        vendor_buffer = bytes()
         serial.write(UART_CMD.CMD_READ_VENDOR_DATA.to_bytes())
-        while vendor_buffer is None or len(vendor_buffer) != sizeof(VendorDataStruct):
+        while len(vendor_buffer) != sizeof(VendorDataStruct):
             vendor_buffer += serial.read(sizeof(VendorDataStruct))
         vendor_data = VendorDataStruct.from_buffer_copy(vendor_buffer)
         print(f"Vendor Data: {vendor_data}")
         assert (
             vendor_data.VendorId == VENDOR_ID and vendor_data.ProductId == PRODUCT_ID
-        ), "Vendor ID and Product Mismatch | Expected: 0x{VENDOR_ID:02X}, 0x{PRODUCT_ID:02X} | Got: 0x{vendor_data.VendorId:02X}, 0x{vendor_data.ProductId:02X}"
+        ), "Vendor ID and Product Mismatch | Expected: 0x{VENDOR_ID}, 0x{PRODUCT_ID} | Got: 0x{vendor_data.VendorId}, 0x{vendor_data.ProductId}"
 
         assert (
-            vendor_data.FwVersion != FIRMWARE_VERSION
-        ), f"Firmware Version too low | Expected: {FIRMWARE_VERSION} | Got: {vendor_data.FwVersion}"
+            vendor_data.FwVersion == FIRMWARE_VERSION
+        ), f"Firmware Version too low | Expected: {hex(FIRMWARE_VERSION)} | Got: {hex(vendor_data.FwVersion)}"
 
         return True
