@@ -20,7 +20,17 @@ class MonitorInfo(TypedDict):
 
     timestamp: str
 
-    fragment_type: Optional[fragment_type]
+    fragment_type: fragment_type
+    feature_names: List[str]
+
+
+class FragmentInfo(TypedDict):
+    # Fragmented File Information
+
+    fragment_type: fragment_type
+    feature_names: List[str]
+
+    monitor_info: MonitorInfo
 
 
 @dataclass
